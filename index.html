@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+
+<html lang="id">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Pengumuman Kelulusan</title>
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs/qrcode.min.js"></script>
+<style>
+    :root {
+      --primary: #4b56d2;
+      --accent: #ffbd59;
+      --light: #f9f9f9;
+      --dark-bg: #1e1e2f;
+      --dark-text: #eaeaea;
+      --shadow: rgba(0, 0, 0, 0.1);
+    }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: var(--light);
+      color: #333;
+      padding: 2rem;
+      text-align: center;
+    }
+    .dark { background: var(--dark-bg); color: var(--dark-text); }
+    .logo {
+      width: 100px;
+      margin-bottom: 1rem;
+      border-radius: 10px;
+      box-shadow: 0 4px 8px var(--shadow);
+      cursor: pointer;
+    }
+    h1, h2, h3, h4 { color: var(--primary); }
+    input, select, button {
+      padding: 0.6rem;
+      margin: 0.4rem;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+    button { background-color: var(--primary); color: white; cursor: pointer; }
+    .admin-panel, #formCek {
+      background: #fff;
+      padding: 1rem;
+      max-width: 600px;
+      margin: 1rem auto;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px var(--shadow);
+    }
+    #hasil { background: #e7f1ff; border: 1px solid #c6e2ff; padding: 1rem; border-radius: 6px; margin-top: 1rem; color: #003366; }
+    .qrcode { margin-top: 1rem; animation: fadeIn 0.8s ease; }
+    .hidden { display: none; }
+    #themeToggle {
+      position: fixed; top: 10px; right: 10px;
+      background: var(--accent); color: #000;
+      padding: 0.3rem 0.8rem;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+<button id="themeToggle" onclick="toggleTheme()">🌙</button>
+<img class="logo" id="logo" src="" title="Logo Sekolah"/>
+<h1 id="namaSekolah">...</h1>
+<div id="countdown"></div>
+<div id="formCek">
+<h2>Cek Kelulusan</h2>
+<input id="nisn" placeholder="Masukkan NISN" type="text"/><br/>
+<button onclick="cekKelulusan()">Cek</button>
+<div id="hasil"></div>
+<div class="qrcode" id="qrcode"></div>
+</div>
+<div class="hidden" id="adminLogin">
+<h3>Login Admin</h3>
+<input id="adminPass" placeholder="Password Admin" type="password"/><br/>
+<button onclick="loginAdmin()">Login</button>
+</div>
+<div class="admin-panel hidden" id="adminPanel">
+<h3>Panel Admin</h3>
+<label>Ganti Nama Sekolah:</label><br/>
+<input id="gantiNama" type="text"/><button onclick="ubahNama()">Ubah</button><br/>
+<label>Ganti Logo:</label><input onchange="ubahLogo(event)" type="file"/><br/>
+<label>Upload Data Kelulusan (.txt):</label>
+<input accept=".txt" id="fileInput" onchange="bacaFile(event)" type="file"/><br/>
+<label>Tambah Manual:</label><br/>
+<input id="nisnManual" placeholder="NISN" type="text"/>
+<input id="namaManual" placeholder="Nama" type="text"/>
+<select id="statusManual">
+<option value="LULUS">LULUS</option>
+<option value="TIDAK LULUS">TIDAK LULUS</option>
+</select>
+<button onclick="tambahManual()">Tambah</button>
+<hr/>
+<h4>Pengaturan Countdown</h4>
+<input id="tanggalBaru" type="date"/>
+<input id="waktuBaru" type="time"/>
+<button onclick="simpanCountdown()">Simpan Countdown</button>
+<p id="pengumumanSaatIni"></p>
+<hr/>
+<h4>Tambah Sekolah Baru</h4>
+<input id="newId" placeholder="ID Sekolah (slug)" type="text"/>
+<input id="newNama" placeholder="Nama Sekolah" type="text"/>
+<input id="newLogo" placeholder="URL Logo" type="text"/>
+<input id="newCountdown" type="datetime-local"/>
+<input id="newPassword" placeholder="Password Admin" type="text"/>
+<button onclick="tambahSekolahBaru()">Tambah Sekolah</button>
+<div id="linkHasilTambah"></div>
+</div>
+<script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyAzo92Q5iSxKs13-NaNbKBKFKgkB7GB9CE",
+      authDomain: "kelulusan-web.firebaseapp.com",
+      databaseURL: "https://kelulusan-web-default-rtdb.firebaseio.com",
+      projectId: "kelulusan-web",
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    const sekolahId = new URLSearchParams(location.search).get("sekolah") || "default";
+    const sekolahRef = db.ref("sekolah/" + sekolahId);
+    const dataKelulusan = {};
+    let tanggalPengumuman = new Date();
+
+    sekolahRef.once("value").then(snap => {
+      const data = snap.val();
+      if (!data) return alert("Sekolah tidak ditemukan");
+      document.getElementById("namaSekolah").innerText = data.nama;
+      document.getElementById("logo").src = data.logo;
+      tanggalPengumuman = new Date(data.countdown);
+      countdownUpdate();
+      updateTampilanPengumuman();
+      Object.entries(data.data_kelulusan || {}).forEach(([nisn, v]) => dataKelulusan[nisn] = v);
+      window.adminPassword = data.admin_password;
+    });
+
+    function toggleTheme() {
+      document.body.classList.toggle("dark");
+      document.getElementById("themeToggle").innerText = document.body.classList.contains("dark") ? "☀️" : "🌙";
+    }
+
+    function countdownUpdate() {
+      const now = new Date();
+      const selisih = tanggalPengumuman - now;
+      const cd = document.getElementById("countdown");
+      if (selisih <= 0) {
+        cd.innerText = "🔓 Pengumuman Kelulusan Sudah Dibuka!";
+        return;
+      }
+      const hari = Math.floor(selisih / (1000 * 60 * 60 * 24));
+      const jam = Math.floor((selisih / (1000 * 60 * 60)) % 24);
+      const menit = Math.floor((selisih / (1000 * 60)) % 60);
+      const detik = Math.floor((selisih / 1000) % 60);
+      cd.innerText = `⏳ Menuju Pengumuman: ${hari}h ${jam}j ${menit}m ${detik}d`;
+      setTimeout(countdownUpdate, 1000);
+    }
+    countdownUpdate();
+
+    function updateTampilanPengumuman() {
+      document.getElementById("pengumumanSaatIni").innerText = "Tanggal Pengumuman Saat Ini: " + tanggalPengumuman.toLocaleString("id-ID");
+    }
+
+    function simpanCountdown() {
+      const tgl = document.getElementById("tanggalBaru").value;
+      const jam = document.getElementById("waktuBaru").value;
+      if (!tgl || !jam) return alert("Tanggal dan waktu harus diisi!");
+      tanggalPengumuman = new Date(`${tgl}T${jam}`);
+      countdownUpdate();
+      sekolahRef.update({ countdown: tanggalPengumuman.toISOString() });
+      updateTampilanPengumuman();
+      alert("Countdown diperbarui");
+    }
+
+    function loginAdmin() {
+      const pass = document.getElementById("adminPass").value;
+      if (pass === window.adminPassword) {
+        document.getElementById("adminLogin").classList.add("hidden");
+        document.getElementById("adminPanel").classList.remove("hidden");
+        updateTampilanPengumuman();
+      } else alert("Password salah");
+    }
+
+    function ubahNama() {
+      const namaBaru = document.getElementById("gantiNama").value;
+      document.getElementById("namaSekolah").innerText = namaBaru;
+      sekolahRef.update({ nama: namaBaru });
+    }
+
+    function ubahLogo(e) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        document.getElementById("logo").src = reader.result;
+        sekolahRef.update({ logo: reader.result });
+      };
+      reader.readAsDataURL(e.target.files[0]);
+    }
+
+    function bacaFile(event) {
+      const file = event.target.files[0];
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const lines = e.target.result.split(/\r?\n/);
+        lines.forEach(line => {
+          const [nisn, nama, status] = line.split('|').map(l => l.trim());
+          if (nisn && nama && status) dataKelulusan[nisn] = { nama, status };
+        });
+        sekolahRef.update({ data_kelulusan: dataKelulusan });
+        alert("Data berhasil dimuat.");
+      };
+      reader.readAsText(file);
+    }
+
+    function tambahManual() {
+      const nisn = document.getElementById("nisnManual").value.trim();
+      const nama = document.getElementById("namaManual").value.trim();
+      const status = document.getElementById("statusManual").value;
+      if (nisn && nama) {
+        dataKelulusan[nisn] = { nama, status };
+        sekolahRef.update({ data_kelulusan: dataKelulusan });
+        alert("Data manual ditambahkan.");
+      }
+    }
+
+    function cekKelulusan() {
+  const now = new Date();
+  if (now < tanggalPengumuman) {
+    alert("Pengumuman belum dibuka. Silakan cek kembali setelah waktu yang ditentukan.");
+    return;
+  }
+      const nisn = document.getElementById("nisn").value.trim();
+      const hasilDiv = document.getElementById("hasil");
+      const qrDiv = document.getElementById("qrcode");
+      hasilDiv.innerHTML = '';
+      qrDiv.innerHTML = '';
+      if (!dataKelulusan[nisn]) return hasilDiv.innerHTML = "<p>NISN tidak ditemukan.</p>";
+      const data = dataKelulusan[nisn];
+      hasilDiv.innerHTML = `<h3>${data.nama}</h3><p>Status: <strong>${data.status}</strong></p>`;
+      if (data.status === "LULUS") {
+        hasilDiv.innerHTML += `<p>\"Selamat Anda lulus! Semua itu mudah bagi Allah SWT, maka perbanyaklah bersyukur.\"</p><button onclick=\"unduhPDF('${nisn}','${data.nama}')\">Unduh Surat Kelulusan</button>`;
+        new QRCode(qrDiv, { text: `${nisn} - ${data.nama} - ${data.status}`, width: 128, height: 128 });
+      }
+    }
+
+    function unduhPDF(nisn, nama) {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+      doc.text("SURAT KETERANGAN KELULUSAN", 20, 20);
+      doc.text(`Nama: ${nama}`, 20, 40);
+      doc.text(`NISN: ${nisn}`, 20, 50);
+      doc.text("Status: LULUS", 20, 60);
+      doc.text("Selamat Anda lulus! Semua itu mudah bagi Allah SWT, maka perbanyaklah bersyukur.", 20, 80, { maxWidth: 170 });
+      doc.text("Tertanda,", 20, 110);
+      doc.text("Kepala Sekolah", 20, 120);
+      doc.save(`Surat_Kelulusan_${nisn}.pdf`);
+    }
+
+    function tambahSekolahBaru() {
+      const id = document.getElementById("newId").value.trim();
+      const nama = document.getElementById("newNama").value.trim();
+      const logo = document.getElementById("newLogo").value.trim();
+      const countdown = document.getElementById("newCountdown").value;
+      const password = document.getElementById("newPassword").value.trim();
+      if (!id || !nama || !logo || !countdown || !password) return alert("Semua field harus diisi!");
+      db.ref("sekolah/" + id).set({ nama, logo, countdown, admin_password: password, data_kelulusan: {} })
+        .then(() => {
+          const link = location.origin + "?sekolah=" + id;
+          document.getElementById("linkHasilTambah").innerHTML = `<p>Sukses! Link sekolah: <a href='${link}' target='_blank'>${link}</a></p>`;
+        }).catch(err => alert("Gagal tambah sekolah: " + err.message));
+    }
+  
+let klikCount = 0;
+let klikTimer;
+document.getElementById("logo").addEventListener("click", () => {
+  klikCount++;
+  clearTimeout(klikTimer);
+  klikTimer = setTimeout(() => klikCount = 0, 3000);
+  if (klikCount === 5) {
+    document.getElementById("adminLogin").classList.remove("hidden");
+    klikCount = 0;
+  }
+});
+</script>
+</body>
+</html>
